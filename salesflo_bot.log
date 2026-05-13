@@ -1,0 +1,55 @@
+2026-05-12 16:01:28,516 [INFO] Navigating to login page...
+2026-05-12 16:02:06,054 [INFO] Submitting login form...
+2026-05-12 16:02:37,122 [ERROR] Login failed or timed out.
+2026-05-12 16:02:37,123 [ERROR] An error occurred: Page.wait_for_selector: Timeout 30000ms exceeded.
+Call log:
+waiting for locator("text=Reports") to be visible
+Traceback (most recent call last):
+  File "D:\Dash\RouteOptimization\bot.py", line 210, in run_bot
+    await login(page)
+  File "D:\Dash\RouteOptimization\bot.py", line 67, in login
+    await page.wait_for_selector("text=Reports", timeout=30000)
+  File "C:\Users\Shahzeb Hassan\AppData\Local\Programs\Python\Python312\Lib\site-packages\playwright\async_api\_generated.py", line 7831, in wait_for_selector
+    await self._impl_obj.wait_for_selector(
+  File "C:\Users\Shahzeb Hassan\AppData\Local\Programs\Python\Python312\Lib\site-packages\playwright\_impl\_page.py", line 392, in wait_for_selector
+    return await self._main_frame.wait_for_selector(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Shahzeb Hassan\AppData\Local\Programs\Python\Python312\Lib\site-packages\playwright\_impl\_frame.py", line 323, in wait_for_selector
+    await self._channel.send("waitForSelector", locals_to_params(locals()))
+  File "C:\Users\Shahzeb Hassan\AppData\Local\Programs\Python\Python312\Lib\site-packages\playwright\_impl\_connection.py", line 59, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Shahzeb Hassan\AppData\Local\Programs\Python\Python312\Lib\site-packages\playwright\_impl\_connection.py", line 514, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.TimeoutError: Page.wait_for_selector: Timeout 30000ms exceeded.
+Call log:
+waiting for locator("text=Reports") to be visible
+
+2026-05-12 16:02:37,568 [INFO] Browser closed. Bot execution finished.
+2026-05-12 16:02:53,876 [INFO] Navigating to login page...
+2026-05-12 16:03:30,909 [INFO] Submitting login form...
+2026-05-12 16:03:42,927 [ERROR] An error occurred: Page.wait_for_selector: Target page, context or browser has been closed
+Call log:
+waiting for locator("text=Reports") to be visible
+Traceback (most recent call last):
+  File "D:\Dash\RouteOptimization\bot.py", line 210, in run_bot
+    await login(page)
+  File "D:\Dash\RouteOptimization\bot.py", line 67, in login
+    await page.wait_for_selector("text=Reports", timeout=30000)
+  File "C:\Users\Shahzeb Hassan\AppData\Local\Programs\Python\Python312\Lib\site-packages\playwright\async_api\_generated.py", line 7831, in wait_for_selector
+    await self._impl_obj.wait_for_selector(
+  File "C:\Users\Shahzeb Hassan\AppData\Local\Programs\Python\Python312\Lib\site-packages\playwright\_impl\_page.py", line 392, in wait_for_selector
+    return await self._main_frame.wait_for_selector(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Shahzeb Hassan\AppData\Local\Programs\Python\Python312\Lib\site-packages\playwright\_impl\_frame.py", line 323, in wait_for_selector
+    await self._channel.send("waitForSelector", locals_to_params(locals()))
+  File "C:\Users\Shahzeb Hassan\AppData\Local\Programs\Python\Python312\Lib\site-packages\playwright\_impl\_connection.py", line 59, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Shahzeb Hassan\AppData\Local\Programs\Python\Python312\Lib\site-packages\playwright\_impl\_connection.py", line 514, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.TargetClosedError: Page.wait_for_selector: Target page, context or browser has been closed
+Call log:
+waiting for locator("text=Reports") to be visible
+
+2026-05-12 16:03:43,298 [INFO] Browser closed. Bot execution finished.
