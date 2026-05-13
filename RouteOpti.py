@@ -662,7 +662,7 @@ with tab2:
             "ReturnRate": "Return %",
         })
         .style
-        .applymap(highlight_return, subset=["Return %"])
+        .map(highlight_return, subset=["Return %"])
         .format({
             "Net Sales (Rs)": "{:,.0f}",
             "Discount (Rs)":  "{:,.0f}",
