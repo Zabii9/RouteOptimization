@@ -4,3 +4,8 @@ plotly
 python-dotenv
 openpyxl
 matplotlib
+selenium 
+webdriver-manager 
+mysql-connector-python
+easyocr
+Pillow

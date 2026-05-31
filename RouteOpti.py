@@ -1,6 +1,6 @@
 """
 CBL Load Form Dashboard — Streamlit App
-Run: streamlit run cbl_dashboard.py
+Run: streamlit run RouteOpti.py
 """
 
 import streamlit as st
@@ -13,6 +13,7 @@ import json
 import time
 import requests
 from datetime import datetime
+import vms_module
 
 # ─────────────────────────────────────────────────────────────
 # PAGE CONFIG
@@ -427,55 +428,65 @@ def build_date_summary(df: pd.DataFrame) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 📦 CBL Dashboard")
+    
+    # Initialize VMS DB
+    vms_module.init_db()
+    
+    app_mode = st.radio("Navigation", ["Dashboard", "VMS (Vehicle Management)"])
     st.markdown("---")
-
-    uploaded = st.file_uploader(
-        "Upload Load Form Excel",
-        type=["xlsx", "xls"],
-        help="Excel file — header row 1, data starts row 3",
-    )
-
-    st.markdown("---")
-    st.markdown("### Filters")
-
-    if uploaded:
-        raw = load_data(uploaded.read(), uploaded.name)
-
-        dates_avail = sorted(raw["Date"].dropna().dt.date.unique())
-        sel_dates = st.multiselect(
-            "Date(s)",
-            options=dates_avail,
-            default=dates_avail,
-            format_func=lambda d: d.strftime("%d %b %Y"),
+    
+    if app_mode == "VMS (Vehicle Management)":
+        vms_mode = st.radio("VMS Menu", ["Create Requisition", "View Requisitions", "Driver & Salesman CRUD"])
+        df = None
+        
+    else:
+        uploaded = st.file_uploader(
+            "Upload Load Form Excel",
+            type=["xlsx", "xls"],
+            help="Excel file — header row 1, data starts row 3",
         )
-
-        dms_avail = sorted(raw["Deliveryman"].dropna().unique())
-        sel_dms = st.multiselect(
-            "Deliveryman",
-            options=dms_avail,
-            default=dms_avail,
-        )
-
-        lfs_avail = sorted(raw["LoadForm"].dropna().unique())
-        sel_lfs = st.multiselect(
-            "Load Form #",
-            options=lfs_avail,
-            default=lfs_avail,
-        )
-
-        # Apply filters
-        df = raw[
-            raw["Date"].dt.date.isin(sel_dates) &
-            raw["Deliveryman"].isin(sel_dms) &
-            raw["LoadForm"].isin(sel_lfs)
-        ].copy()
 
         st.markdown("---")
-        st.caption(f"📊 {len(df):,} rows loaded")
-        st.caption(f"📅 {raw['Date'].min().strftime('%d %b')} – {raw['Date'].max().strftime('%d %b %Y')}")
+        st.markdown("### Filters")
 
-    else:
-        df = None
+        if uploaded:
+            raw = load_data(uploaded.read(), uploaded.name)
+
+            dates_avail = sorted(raw["Date"].dropna().dt.date.unique())
+            sel_dates = st.multiselect(
+                "Date(s)",
+                options=dates_avail,
+                default=dates_avail,
+                format_func=lambda d: d.strftime("%d %b %Y"),
+            )
+
+            dms_avail = sorted(raw["Deliveryman"].dropna().unique())
+            sel_dms = st.multiselect(
+                "Deliveryman",
+                options=dms_avail,
+                default=dms_avail,
+            )
+
+            lfs_avail = sorted(raw["LoadForm"].dropna().unique())
+            sel_lfs = st.multiselect(
+                "Load Form #",
+                options=lfs_avail,
+                default=lfs_avail,
+            )
+
+            # Apply filters
+            df = raw[
+                raw["Date"].dt.date.isin(sel_dates) &
+                raw["Deliveryman"].isin(sel_dms) &
+                raw["LoadForm"].isin(sel_lfs)
+            ].copy()
+
+            st.markdown("---")
+            st.caption(f"📊 {len(df):,} rows loaded")
+            st.caption(f"📅 {raw['Date'].min().strftime('%d %b')} – {raw['Date'].max().strftime('%d %b %Y')}")
+
+        else:
+            df = None
 
     st.markdown("---")
     st.markdown(
@@ -487,6 +498,24 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────
+
+if app_mode == "VMS (Vehicle Management)":
+    st.markdown("""
+    <div class="top-bar">
+      <div>
+        <h1>🚛 Vehicle Management System</h1>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if vms_mode == "Create Requisition":
+        vms_module.render_create_requisition()
+    elif vms_mode == "View Requisitions":
+        vms_module.render_view_requisitions()
+    elif vms_mode == "Driver & Salesman CRUD":
+        vms_module.render_driver_salesman_crud()
+    
+    st.stop()
 
 st.markdown("""
 <div class="top-bar">
