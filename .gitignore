@@ -1,0 +1,10 @@
+# Streamlit secrets (never commit credentials)
+.streamlit/secrets.toml
+
+# Service account key file
+rapid-pottery-425007-q7-278c4933cff8.json
+
+# Python
+__pycache__/
+*.pyc
+*.log

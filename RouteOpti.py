@@ -13,7 +13,6 @@ import json
 import time
 import requests
 from datetime import datetime
-import vms_module
 
 # ─────────────────────────────────────────────────────────────
 # PAGE CONFIG
@@ -259,6 +258,23 @@ def run_osrm_optimize(shops, warehouse):
     return rows, cum_km, cum_min, route_idx, method
 
 
+def build_osrm_map_project_link(ordered_shops, warehouse):
+    """Build an external OSRM map.project-osrm.org link for the full sequence."""
+    def _lat(s): return s.get("lat", s.get("Lat"))
+    def _lon(s): return s.get("lon", s.get("Lon"))
+
+    all_stops = [warehouse] + ordered_shops + [warehouse]
+    center_lat = sum(_lat(s) for s in all_stops) / len(all_stops)
+    center_lon = sum(_lon(s) for s in all_stops) / len(all_stops)
+    loc_params = "&".join(f"loc={_lat(s)},{_lon(s)}" for s in all_stops)
+
+    return (
+        f"https://map.project-osrm.org/?z=12&center={center_lat},{center_lon}"
+        f"&{loc_params}&hl=en&alt=0&srv=0"
+    )
+
+
+
 def build_gmaps_chunks(ordered_shops, warehouse, chunk_size=9):
     def _lat(s): return s.get("lat", s.get("Lat"))
     def _lon(s): return s.get("lon", s.get("Lon"))
@@ -329,10 +345,9 @@ const bounds=STOPS.map(s=>[s.lat,s.lon]);if(bounds.length)map.fitBounds(bounds,{
 </script></body></html>"""
 
 
-@st.cache_data(show_spinner=False)
-def load_data(file_bytes: bytes, filename: str) -> pd.DataFrame:
-    """Load & clean the Load Form Excel file."""
-    df = pd.read_excel(BytesIO(file_bytes), header=0, skiprows=[1])
+
+
+def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = [str(c).strip() for c in df.columns]
 
     # Rename to safe internal names
@@ -379,9 +394,41 @@ def load_data(file_bytes: bytes, filename: str) -> pd.DataFrame:
     df["Discount"] = pd.to_numeric(df["Discount"], errors="coerce").fillna(0)
 
     # Extract DM code from Deliveryman string
-    df["DMCode"] = df["Deliveryman"].str.extract(r'\[(.*?)\]')
+    if "Deliveryman" in df.columns:
+        df["DMCode"] = df["Deliveryman"].str.extract(r'\[(.*?)\]')
+
+    # If the second row (sub-headers) was somehow loaded as data, its NetSales might have become 0 and Date NaT.
+    # We can drop rows where StoreCode is missing to clean up artifacts
+    if "StoreCode" in df.columns:
+        df = df.dropna(subset=["StoreCode"])
 
     return df
+
+@st.cache_data(show_spinner=False)
+def load_data(file_bytes: bytes, filename: str) -> pd.DataFrame:
+    """Load & clean the Load Form Excel file."""
+    df = pd.read_excel(BytesIO(file_bytes), header=0, skiprows=[1])
+    return clean_dataframe(df)
+
+@st.cache_data(show_spinner=False)
+def load_gsheet_data() -> pd.DataFrame:
+    """Load & clean data from Google Sheets using Streamlit secrets."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+    
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=scope
+    )
+    client = gspread.authorize(creds)
+    spreadsheet = client.open("KMs Reading Data")
+    sheet = spreadsheet.worksheet("Dump")
+    df = pd.DataFrame(sheet.get_all_records())
+    return clean_dataframe(df)
 
 
 def fmt_rs(v):
@@ -428,65 +475,67 @@ def build_date_summary(df: pd.DataFrame) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 📦 CBL Dashboard")
-    
-    # Initialize VMS DB
-    vms_module.init_db()
-    
-    app_mode = st.radio("Navigation", ["Dashboard", "VMS (Vehicle Management)"])
     st.markdown("---")
-    
-    if app_mode == "VMS (Vehicle Management)":
-        vms_mode = st.radio("VMS Menu", ["Create Requisition", "View Requisitions", "Driver & Salesman CRUD"])
-        df = None
-        
+
+    uploaded = st.file_uploader(
+        "Upload Load Form Excel",
+        type=["xlsx", "xls"],
+        help="Excel file — header row 1, data starts row 3",
+    )
+
+    st.markdown("---")
+    st.markdown("### Filters")
+
+    raw = None
+    if uploaded:
+        raw = load_data(uploaded.read(), uploaded.name)
     else:
-        uploaded = st.file_uploader(
-            "Upload Load Form Excel",
-            type=["xlsx", "xls"],
-            help="Excel file — header row 1, data starts row 3",
+        try:
+            with st.spinner("Fetching data from Google Sheets..."):
+                raw = load_gsheet_data()
+        except Exception as e:
+            st.error(f"Failed to load Google Sheets data: {e}")
+
+    if raw is not None and not raw.empty:
+        dates_avail = sorted(raw["Date"].dropna().dt.date.unique())
+        sel_dates = st.multiselect(
+            "Date(s)",
+            options=dates_avail,
+            default=dates_avail,
+            format_func=lambda d: d.strftime("%d %b %Y"),
         )
 
+        dms_avail = sorted(raw["Deliveryman"].dropna().unique()) if "Deliveryman" in raw.columns else []
+        sel_dms = st.multiselect(
+            "Deliveryman",
+            options=dms_avail,
+            default=dms_avail,
+        )
+
+        lfs_avail = sorted(raw["LoadForm"].dropna().unique()) if "LoadForm" in raw.columns else []
+        sel_lfs = st.multiselect(
+            "Load Form #",
+            options=lfs_avail,
+            default=lfs_avail,
+        )
+
+        mask = pd.Series(True, index=raw.index)
+        if "Date" in raw.columns and sel_dates:
+            mask &= raw["Date"].dt.date.isin(sel_dates)
+        if "Deliveryman" in raw.columns and sel_dms:
+            mask &= raw["Deliveryman"].isin(sel_dms)
+        if "LoadForm" in raw.columns and sel_lfs:
+            mask &= raw["LoadForm"].isin(sel_lfs)
+            
+        df = raw[mask].copy()
+
         st.markdown("---")
-        st.markdown("### Filters")
-
-        if uploaded:
-            raw = load_data(uploaded.read(), uploaded.name)
-
-            dates_avail = sorted(raw["Date"].dropna().dt.date.unique())
-            sel_dates = st.multiselect(
-                "Date(s)",
-                options=dates_avail,
-                default=dates_avail,
-                format_func=lambda d: d.strftime("%d %b %Y"),
-            )
-
-            dms_avail = sorted(raw["Deliveryman"].dropna().unique())
-            sel_dms = st.multiselect(
-                "Deliveryman",
-                options=dms_avail,
-                default=dms_avail,
-            )
-
-            lfs_avail = sorted(raw["LoadForm"].dropna().unique())
-            sel_lfs = st.multiselect(
-                "Load Form #",
-                options=lfs_avail,
-                default=lfs_avail,
-            )
-
-            # Apply filters
-            df = raw[
-                raw["Date"].dt.date.isin(sel_dates) &
-                raw["Deliveryman"].isin(sel_dms) &
-                raw["LoadForm"].isin(sel_lfs)
-            ].copy()
-
-            st.markdown("---")
-            st.caption(f"📊 {len(df):,} rows loaded")
+        st.caption(f"📊 {len(df):,} rows loaded")
+        if "Date" in raw.columns and not raw["Date"].dropna().empty:
             st.caption(f"📅 {raw['Date'].min().strftime('%d %b')} – {raw['Date'].max().strftime('%d %b %Y')}")
 
-        else:
-            df = None
+    else:
+        df = None
 
     st.markdown("---")
     st.markdown(
@@ -498,24 +547,6 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────
-
-if app_mode == "VMS (Vehicle Management)":
-    st.markdown("""
-    <div class="top-bar">
-      <div>
-        <h1>🚛 Vehicle Management System</h1>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    if vms_mode == "Create Requisition":
-        vms_module.render_create_requisition()
-    elif vms_mode == "View Requisitions":
-        vms_module.render_view_requisitions()
-    elif vms_mode == "Driver & Salesman CRUD":
-        vms_module.render_driver_salesman_crud()
-    
-    st.stop()
 
 st.markdown("""
 <div class="top-bar">
@@ -1180,19 +1211,6 @@ with tab5:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-        # Interactive map
-        st.markdown('<div class="section-header">Interactive Route Map</div>', unsafe_allow_html=True)
-        with st.spinner("Fetching road geometry for map..."):
-            full_stops = [res["warehouse"]] + res["ordered_shops"] + [res["warehouse"]]
-            road_geom = get_osrm_route_geometry(full_stops)
-
-        map_html = generate_route_map_html(
-            ordered_shops=res["ordered_shops"], warehouse=res["warehouse"],
-            road_geometry=road_geom, total_km=res["total_km"], total_min=res["total_min"],
-            load_form=res["load_form"], deliveryman=res["dm_name"],
-        )
-        st.components.v1.html(map_html, height=650, scrolling=False)
-
         # Google Maps links
         st.markdown('<div class="section-header">Google Maps Navigation Links</div>', unsafe_allow_html=True)
         chunks = build_gmaps_chunks(res["ordered_shops"], res["warehouse"])
@@ -1201,3 +1219,42 @@ with tab5:
                 f"**Link {ch['num']}** — {ch['stops']} ({ch['from']} → {ch['to']})  \n"
                 f"[🔗 Open in Google Maps]({ch['url']})"
             )
+
+        # OSRM Full Route Link
+        st.markdown('<div class="section-header">🗺️ OSRM Full Route Map (All Stops in One Link)</div>', unsafe_allow_html=True)
+        
+        st.markdown("""
+        <div class="osrm-note">
+        ℹ️ This link opens the full OSRM map with the entire route sequence on `map.project-osrm.org`.
+        All stops are shown sequentially in the optimized order.
+        </div>
+        """, unsafe_allow_html=True)
+        
+        osrm_project_url = build_osrm_map_project_link(res["ordered_shops"], res["warehouse"])
+        st.markdown(f"**🔗 Open full route in OSRM map viewer:**  [Open OSRM Route]({osrm_project_url})")
+
+        # Info columns
+        col_osrm1, col_osrm2 = st.columns(2)
+
+        with col_osrm1:
+            st.markdown("**📍 Route Details:**")
+            st.caption(f"✓ Total Stops: {len(res['ordered_shops'])}")
+            st.caption(f"✓ Start & End: Warehouse")
+            st.caption(f"✓ Route: OSRM Optimized")
+
+        with col_osrm2:
+            st.markdown("**📲 External Links:**")
+            st.markdown(f"[🔗 Open OSRM map viewer]({osrm_project_url})")
+
+        # Interactive Route Map
+        st.markdown("---")
+        st.markdown('<div class="section-header">🗺️ Interactive Route Map</div>', unsafe_allow_html=True)
+        with st.spinner("Rendering interactive route map..."):
+            full_stops = [res["warehouse"]] + res["ordered_shops"] + [res["warehouse"]]
+            road_geom = get_osrm_route_geometry(full_stops)
+            map_html = generate_route_map_html(
+                ordered_shops=res["ordered_shops"], warehouse=res["warehouse"],
+                road_geometry=road_geom, total_km=res["total_km"], total_min=res["total_min"],
+                load_form=res["load_form"], deliveryman=res["dm_name"],
+            )
+            st.components.v1.html(map_html, height=650, scrolling=False)

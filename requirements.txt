@@ -9,3 +9,5 @@ webdriver-manager
 mysql-connector-python
 easyocr
 Pillow
+gspread
+google-auth
