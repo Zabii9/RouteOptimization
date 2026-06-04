@@ -487,14 +487,26 @@ with st.sidebar:
     st.markdown("### Filters")
 
     raw = None
+    data_source = None
     if uploaded:
         raw = load_data(uploaded.read(), uploaded.name)
+        data_source = "upload"
     else:
         try:
             with st.spinner("Fetching data from Google Sheets..."):
                 raw = load_gsheet_data()
+                data_source = "gsheet"
         except Exception as e:
             st.error(f"Failed to load Google Sheets data: {e}")
+
+    # For Google Sheets data: exclude LoadForms with zero Net Sales
+    if raw is not None and not raw.empty and data_source == "gsheet" and "LoadForm" in raw.columns and "NetSales" in raw.columns:
+        lf_sales = raw.groupby("LoadForm")["NetSales"].sum()
+        zero_lfs = lf_sales[lf_sales == 0].index
+        excluded_count = len(zero_lfs)
+        raw = raw[~raw["LoadForm"].isin(zero_lfs)].copy()
+        if excluded_count > 0:
+            st.info(f"🔄 Google Sheets: excluded **{excluded_count}** Load Form(s) with zero Net Sales.")
 
     if raw is not None and not raw.empty:
         dates_avail = sorted(raw["Date"].dropna().dt.date.unique())
