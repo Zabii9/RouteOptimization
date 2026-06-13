@@ -509,7 +509,24 @@ with st.sidebar:
             st.info(f"🔄 Google Sheets: excluded **{excluded_count}** Load Form(s) with zero Net Sales.")
 
     if raw is not None and not raw.empty:
-        dates_avail = sorted(raw["Date"].dropna().dt.date.unique())
+        # ── Distributor filter (top) ──
+        DIST_DISPLAY_NAMES = {
+            "Bazaar Technologies (KHI) [D0573]": "CBL-KHI",
+        }
+        dist_avail = sorted(raw["Distributor"].dropna().unique()) if "Distributor" in raw.columns else []
+        sel_dists = st.multiselect(
+            "Distributor",
+            options=dist_avail,
+            default=dist_avail,
+            format_func=lambda d: DIST_DISPLAY_NAMES.get(d, d),
+        )
+
+        # Subset after distributor selection for cascading filters
+        _cascade = raw.copy()
+        if "Distributor" in _cascade.columns and sel_dists:
+            _cascade = _cascade[_cascade["Distributor"].isin(sel_dists)]
+
+        dates_avail = sorted(_cascade["Date"].dropna().dt.date.unique())
         sel_dates = st.multiselect(
             "Date(s)",
             options=dates_avail,
@@ -517,14 +534,18 @@ with st.sidebar:
             format_func=lambda d: d.strftime("%d %b %Y"),
         )
 
-        dms_avail = sorted(raw["Deliveryman"].dropna().unique()) if "Deliveryman" in raw.columns else []
+        # Further cascade by date
+        if "Date" in _cascade.columns and sel_dates:
+            _cascade = _cascade[_cascade["Date"].dt.date.isin(sel_dates)]
+
+        dms_avail = sorted(_cascade["Deliveryman"].dropna().unique()) if "Deliveryman" in _cascade.columns else []
         sel_dms = st.multiselect(
             "Deliveryman",
             options=dms_avail,
             default=dms_avail,
         )
 
-        lfs_avail = sorted(raw["LoadForm"].dropna().unique()) if "LoadForm" in raw.columns else []
+        lfs_avail = sorted(_cascade[_cascade["Deliveryman"].isin(sel_dms)]["LoadForm"].dropna().unique()) if "LoadForm" in _cascade.columns and sel_dms else (sorted(_cascade["LoadForm"].dropna().unique()) if "LoadForm" in _cascade.columns else [])
         sel_lfs = st.multiselect(
             "Load Form #",
             options=lfs_avail,
@@ -534,6 +555,8 @@ with st.sidebar:
         mask = pd.Series(True, index=raw.index)
         if "Date" in raw.columns and sel_dates:
             mask &= raw["Date"].dt.date.isin(sel_dates)
+        if "Distributor" in raw.columns and sel_dists:
+            mask &= raw["Distributor"].isin(sel_dists)
         if "Deliveryman" in raw.columns and sel_dms:
             mask &= raw["Deliveryman"].isin(sel_dms)
         if "LoadForm" in raw.columns and sel_lfs:
