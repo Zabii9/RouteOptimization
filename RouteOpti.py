@@ -492,6 +492,9 @@ with st.sidebar:
         raw = load_data(uploaded.read(), uploaded.name)
         data_source = "upload"
     else:
+        if st.button("🔄 Refresh Data"):
+            load_gsheet_data.clear()
+
         try:
             with st.spinner("Fetching data from Google Sheets..."):
                 raw = load_gsheet_data()
