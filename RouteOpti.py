@@ -258,9 +258,10 @@ def run_osrm_optimize(shops, warehouse):
         to_name   = warehouse["name"] if t == 0 else shops[t - 1]["ShopName"]
         to_code   = "WAREHOUSE"       if t == 0 else shops[t - 1]["ShopCode"]
         to_val    = ""                if t == 0 else shops[t - 1]["OrderValue"]
+        to_ob     = ""                if t == 0 else shops[t - 1].get("OrderBooker", "")
         rows.append({
             "Stop #": step + 1, "From": from_name, "To (Shop)": to_name,
-            "ShopCode": to_code, "OrderValue (Rs)": to_val,
+            "ShopCode": to_code, "Order Booker": to_ob, "OrderValue (Rs)": to_val,
             "Leg km": round(leg_km, 3), "Leg min": round(leg_min, 1),
             "Cumulative km": round(cum_km, 3), "Cumulative min": round(cum_min, 1),
         })
@@ -282,6 +283,23 @@ def build_osrm_map_project_link(ordered_shops, warehouse):
         f"&{loc_params}&hl=en&alt=0&srv=0"
     )
 
+def build_ors_map_project_link(ordered_shops, warehouse):
+    """Build an external OpenRouteService map link for the full sequence."""
+    def _lat(s): return s.get("lat", s.get("Lat"))
+    def _lon(s): return s.get("lon", s.get("Lon"))
+
+    all_stops = [warehouse] + ordered_shops + [warehouse]
+    center_lat = sum(_lat(s) for s in all_stops) / len(all_stops)
+    center_lon = sum(_lon(s) for s in all_stops) / len(all_stops)
+    
+    # ORS format: a=lat1,lon1,lat2,lon2...
+    a_param = ",".join(f"{_lat(s)},{_lon(s)}" for s in all_stops)
+    
+    return (
+        f"https://maps.openrouteservice.org/directions?n1={center_lat}&n2={center_lon}&n3=12"
+        f"&a={a_param}&b=0&c=0&k1=en-US&k2=km"
+    )
+
 
 
 def build_gmaps_chunks(ordered_shops, warehouse, chunk_size=9):
@@ -296,7 +314,8 @@ def build_gmaps_chunks(ordered_shops, warehouse, chunk_size=9):
         orig = f"{_lat(seg[0])},{_lon(seg[0])}"; dest = f"{_lat(seg[-1])},{_lon(seg[-1])}"
         wps = "|".join(f"{_lat(s)},{_lon(s)}" for s in seg[1:-1])
         url = (f"https://www.google.com/maps/dir/?api=1&origin={orig}&destination={dest}&travelmode=driving"
-               + (f"&waypoints={wps}" if wps else ""))
+               + (f"&waypoints={wps}" if wps else "")
+               + "&dir_action=navigate")
         chunks.append({"num": num, "from": _name(seg[0]), "to": _name(seg[-1]),
                        "stops": f"Stops {i}-{end}", "url": url})
         i = end; num += 1
@@ -1315,7 +1334,8 @@ with tab6:
         for gid, ginfo in _group_details.items():
             group_lfs = [lf for lf in ginfo['load_forms'] if lf in all_lfs]
             if len(group_lfs) >= 2:
-                processing_units.append((f"{gid} ({ginfo['name']})", group_lfs, True))
+                # Use joined LF names as label instead of Merge Group Name
+                processing_units.append((", ".join(group_lfs), group_lfs, True))
                 processed_lfs.update(group_lfs)
 
         for lf in all_lfs:
@@ -1329,8 +1349,11 @@ with tab6:
             lf_sub = lf_sub[(lf_sub["Lat"] != 0) & (lf_sub["Lon"] != 0)]
 
             # Deduplicate stores
+            if "OrderBooker" not in lf_sub.columns:
+                lf_sub["OrderBooker"] = ""
             shops = lf_sub.groupby(["StoreCode", "StoreName"]).agg(
                 Lat=("Lat", "first"), Lon=("Lon", "first"), OrderValue=("NetSales", "sum"),
+                OrderBooker=("OrderBooker", "first")
             ).reset_index().rename(columns={"StoreCode": "ShopCode", "StoreName": "ShopName"})
             shops_list = shops.to_dict("records")
 
@@ -1468,8 +1491,11 @@ with tab6:
     lf_df = lf_df[(lf_df["Lat"] != 0) & (lf_df["Lon"] != 0)]
 
     # Deduplicate by store
+    if "OrderBooker" not in lf_df.columns:
+        lf_df["OrderBooker"] = ""
     shop_agg = lf_df.groupby(["StoreCode", "StoreName"]).agg(
         Lat=("Lat", "first"), Lon=("Lon", "first"), OrderValue=("NetSales", "sum"),
+        OrderBooker=("OrderBooker", "first")
     ).reset_index()
     shop_agg = shop_agg.rename(columns={"StoreCode": "ShopCode", "StoreName": "ShopName"})
     shops_list = shop_agg.to_dict("records")
@@ -1576,18 +1602,21 @@ with tab6:
                 f"[🔗 Open in Google Maps]({ch['url']})"
             )
 
-        # OSRM Full Route Link
-        st.markdown('<div class="section-header">🗺️ OSRM Full Route Map (All Stops in One Link)</div>', unsafe_allow_html=True)
+        # OSRM and ORS Full Route Links
+        st.markdown('<div class="section-header">🗺️ Full Route Maps (All Stops in One Link)</div>', unsafe_allow_html=True)
         
         st.markdown("""
         <div class="osrm-note">
-        ℹ️ This link opens the full OSRM map with the entire route sequence on `map.project-osrm.org`.
+        ℹ️ These links open the full map with the entire route sequence on map.project-osrm.org or maps.openrouteservice.org.
         All stops are shown sequentially in the optimized order.
         </div>
         """, unsafe_allow_html=True)
         
         osrm_project_url = build_osrm_map_project_link(res["ordered_shops"], res["warehouse"])
         st.markdown(f"**🔗 Open full route in OSRM map viewer:**  [Open OSRM Route]({osrm_project_url})")
+
+        ors_project_url = build_ors_map_project_link(res["ordered_shops"], res["warehouse"])
+        st.markdown(f"**🔗 Open full route in OpenRouteService map viewer:**  [Open ORS Route]({ors_project_url})")
 
         # Info columns
         col_osrm1, col_osrm2 = st.columns(2)
