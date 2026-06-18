@@ -168,6 +168,15 @@ DEFAULT_WAREHOUSE = {
     "lon":  67.1534304,
 }
 
+def get_warehouse_for_distributor(distributor_name):
+    if distributor_name == "Bazar Technologies [D70002246]":
+        return {
+            "name": "Warehouse (Olp-LHR)",
+            "lat": 31.60441525228378,
+            "lon": 74.3584483423299,
+        }
+    return DEFAULT_WAREHOUSE.copy()
+
 
 def get_osrm_table(coords, retries=3):
     """coords: list of (lat, lon). Returns (dist_km_matrix, dur_min_matrix) or (None, None)."""
@@ -431,6 +440,109 @@ def load_gsheet_data() -> pd.DataFrame:
     return clean_dataframe(df)
 
 
+def _get_gsheet_client():
+    """Get authenticated gspread client using Streamlit secrets."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=scope
+    )
+    return gspread.authorize(creds)
+
+
+def load_merge_rules() -> pd.DataFrame:
+    """Load merge rules from GSheet 'MergeRules' worksheet.
+    Creates the worksheet if it doesn't exist.
+    Returns DataFrame with columns: MergeGroupID, MergeGroupName, LoadForms, CreatedAt
+    """
+    try:
+        client = _get_gsheet_client()
+        spreadsheet = client.open("KMs Reading Data")
+        try:
+            sheet = spreadsheet.worksheet("MergeRules")
+        except Exception:
+            # Worksheet doesn't exist yet — create it with headers
+            sheet = spreadsheet.add_worksheet(title="MergeRules", rows=100, cols=5)
+            sheet.update('A1:E1', [['MergeGroupID', 'MergeGroupName', 'LoadForms', 'CreatedAt', 'CreatedBy']])
+            return pd.DataFrame(columns=['MergeGroupID', 'MergeGroupName', 'LoadForms', 'CreatedAt', 'CreatedBy'])
+
+        records = sheet.get_all_records()
+        if not records:
+            return pd.DataFrame(columns=['MergeGroupID', 'MergeGroupName', 'LoadForms', 'CreatedAt', 'CreatedBy'])
+        return pd.DataFrame(records)
+    except Exception as e:
+        st.error(f"Failed to load merge rules: {e}")
+        return pd.DataFrame(columns=['MergeGroupID', 'MergeGroupName', 'LoadForms', 'CreatedAt', 'CreatedBy'])
+
+
+def save_merge_rule(group_name: str, load_forms: list):
+    """Append a new merge rule to GSheet 'MergeRules' worksheet."""
+    try:
+        client = _get_gsheet_client()
+        spreadsheet = client.open("KMs Reading Data")
+        try:
+            sheet = spreadsheet.worksheet("MergeRules")
+        except Exception:
+            sheet = spreadsheet.add_worksheet(title="MergeRules", rows=100, cols=5)
+            sheet.update('A1:E1', [['MergeGroupID', 'MergeGroupName', 'LoadForms', 'CreatedAt', 'CreatedBy']])
+
+        # Generate next MergeGroupID
+        existing = sheet.get_all_records()
+        if existing:
+            max_id = max(int(r['MergeGroupID'].replace('MRG-', '')) for r in existing if r.get('MergeGroupID', '').startswith('MRG-'))
+            next_id = f"MRG-{max_id + 1:03d}"
+        else:
+            next_id = "MRG-001"
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        lf_str = ",".join(str(lf) for lf in load_forms)
+        sheet.append_row([next_id, group_name, lf_str, now, "Dashboard"])
+        return next_id
+    except Exception as e:
+        st.error(f"Failed to save merge rule: {e}")
+        return None
+
+
+def delete_merge_rule(merge_group_id: str):
+    """Delete a merge rule by ID from GSheet."""
+    try:
+        client = _get_gsheet_client()
+        spreadsheet = client.open("KMs Reading Data")
+        sheet = spreadsheet.worksheet("MergeRules")
+        records = sheet.get_all_records()
+        for idx, r in enumerate(records):
+            if r.get('MergeGroupID') == merge_group_id:
+                sheet.delete_rows(idx + 2)  # +2: 1-indexed + header row
+                return True
+        return False
+    except Exception as e:
+        st.error(f"Failed to delete merge rule: {e}")
+        return False
+
+
+def get_merge_map(merge_rules_df: pd.DataFrame) -> dict:
+    """Build a lookup: {LoadForm -> MergeGroupID} for quick checking.
+    Also returns group_details: {MergeGroupID -> {name, load_forms[]}}.
+    """
+    lf_to_group = {}
+    group_details = {}
+    if merge_rules_df is None or merge_rules_df.empty:
+        return lf_to_group, group_details
+    for _, row in merge_rules_df.iterrows():
+        gid = row['MergeGroupID']
+        gname = row['MergeGroupName']
+        lfs = [lf.strip() for lf in str(row['LoadForms']).split(',') if lf.strip()]
+        group_details[gid] = {'name': gname, 'load_forms': lfs}
+        for lf in lfs:
+            lf_to_group[lf] = gid
+    return lf_to_group, group_details
+
+
 def fmt_rs(v):
     if v >= 1_000_000:
         return f"Rs {v/1_000_000:.2f}M"
@@ -515,6 +627,10 @@ with st.sidebar:
         # ── Distributor filter (top) ──
         DIST_DISPLAY_NAMES = {
             "Bazaar Technologies (KHI) [D0573]": "CBL-KHI",
+            "Bazaar Technologies (PVT) Ltd [D70002202]": "OlP-KHI",
+            "Bazar Technologies [D70002246]": "Olp-LHR",
+
+
         }
         dist_avail = sorted(raw["Distributor"].dropna().unique()) if "Distributor" in raw.columns else []
         sel_dists = st.multiselect(
@@ -627,11 +743,12 @@ if df is None or len(df) == 0:
 # ─────────────────────────────────────────────────────────────
 # TAB LAYOUT
 # ─────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Overview",
     "📋 Load Form Summary",
     "📅 Date-wise Analysis",
     "🔍 Deep Dive",
+    "🔗 Merge Load Forms",
     "🗺️ Route Optimizer",
 ])
 
@@ -1018,9 +1135,146 @@ with tab4:
 
 
 # ══════════════════════════════════════════════════════════════
-# TAB 5 — ROUTE OPTIMIZER (OSRM)
+# TAB 5 — MERGE LOAD FORMS
 # ══════════════════════════════════════════════════════════════
 with tab5:
+    st.markdown('<div class="section-header">🔗 Create Merge Group</div>', unsafe_allow_html=True)
+    st.caption("Combine 2 or more Load Forms into a single optimized route. Merge rules are saved to Google Sheets.")
+
+    # Load existing merge rules (cached in session state)
+    if "merge_rules" not in st.session_state:
+        with st.spinner("Loading merge rules from Google Sheets..."):
+            st.session_state["merge_rules"] = load_merge_rules()
+
+    merge_rules_df = st.session_state["merge_rules"]
+    lf_to_group, group_details = get_merge_map(merge_rules_df)
+
+    # Build LF options with labels
+    merge_lf_info = df.groupby("LoadForm").agg(
+        DM=("Deliveryman", "first"),
+        Date=("Date", "first"),
+        NetSales=("NetSales", "sum"),
+        Drops=("StoreCode", "nunique"),
+    ).reset_index()
+    merge_lf_info["DMShort"] = merge_lf_info["DM"].str.split(" DM ").str[0]
+    merge_lf_info["DateStr"] = merge_lf_info["Date"].dt.strftime("%d %b %Y").fillna("")
+    merge_lf_label_map = {
+        row["LoadForm"]: f"{row['LoadForm']}  —  {row['DMShort']} · {row['DateStr']} · {row['Drops']} drops · {fmt_rs(row['NetSales'])}"
+        for _, row in merge_lf_info.iterrows()
+    }
+    merge_lf_options = sorted(merge_lf_label_map.keys())
+
+    # Show which LFs are already merged
+    already_merged_lfs = set(lf_to_group.keys())
+
+    col_merge1, col_merge2 = st.columns([3, 1])
+    with col_merge1:
+        sel_merge_lfs = st.multiselect(
+            "Select Load Forms to merge (2 or more)",
+            options=merge_lf_options,
+            format_func=lambda x: ("🔗 " if x in already_merged_lfs else "") + merge_lf_label_map.get(x, x),
+            key="merge_lf_select",
+            help="Load Forms with 🔗 icon are already part of a merge group.",
+        )
+    with col_merge2:
+        merge_group_name = st.text_input("Merge Group Name (Optional)", placeholder="Auto-generated if left empty")
+
+    # Preview combined stats
+    if len(sel_merge_lfs) >= 2:
+        preview_df = df[df["LoadForm"].isin(sel_merge_lfs)]
+        p_drops = preview_df["StoreCode"].nunique()
+        p_net = preview_df["NetSales"].sum()
+        p_inv = preview_df["Invoice"].nunique() if "Invoice" in preview_df.columns else 0
+        p_skus = preview_df["SKUCode"].nunique() if "SKUCode" in preview_df.columns else 0
+        p_dms = preview_df["Deliveryman"].nunique()
+
+        # Generate default name
+        dms_list = preview_df["Deliveryman"].dropna().unique()
+        dm_label = dms_list[0].split(" DM ")[0] if len(dms_list) == 1 else "Multiple DMs"
+        dates_list = preview_df["Date"].dt.strftime("%d %b").dropna().unique()
+        date_label = dates_list[0] if len(dates_list) == 1 else "Multiple Dates"
+        default_merge_name = f"{dm_label} - {date_label} ({len(sel_merge_lfs)} LFs)"
+
+        st.markdown(f"""
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:14px 20px;margin:10px 0">
+          <div style="font-size:14px;font-weight:700;color:#1d4ed8;margin-bottom:8px">📋 Merge Preview — {len(sel_merge_lfs)} Load Forms</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
+            <div><span style="font-size:11px;color:#6b7280">Combined Drops</span><br><b>{p_drops}</b></div>
+            <div><span style="font-size:11px;color:#6b7280">Net Sales</span><br><b>{fmt_rs(p_net)}</b></div>
+            <div><span style="font-size:11px;color:#6b7280">Invoices</span><br><b>{p_inv}</b></div>
+            <div><span style="font-size:11px;color:#6b7280">SKUs</span><br><b>{p_skus}</b></div>
+            <div><span style="font-size:11px;color:#6b7280">Deliverymen</span><br><b>{p_dms}</b></div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Check if any selected LF is already in a different merge group
+        conflict_lfs = [lf for lf in sel_merge_lfs if lf in already_merged_lfs]
+        if conflict_lfs:
+            conflict_groups = set(lf_to_group[lf] for lf in conflict_lfs)
+            st.warning(f"⚠️ These Load Forms are already in merge groups: {', '.join(conflict_lfs)} → Groups: {', '.join(conflict_groups)}. Saving will create a new group (old ones won't auto-delete).")
+
+        if st.button("💾 Save Merge Rule", type="primary", key="btn_save_merge"):
+            final_name = merge_group_name.strip() if merge_group_name.strip() else default_merge_name
+            with st.spinner("Saving merge rule to Google Sheets..."):
+                new_id = save_merge_rule(final_name, sel_merge_lfs)
+            if new_id:
+                st.success(f"✅ Merge group **{new_id}** — \"{final_name}\" saved! ({len(sel_merge_lfs)} Load Forms)")
+                # Refresh cache
+                st.session_state["merge_rules"] = load_merge_rules()
+                time.sleep(1)
+                st.rerun()
+    elif len(sel_merge_lfs) == 1:
+        st.info("ℹ️ Select at least **2** Load Forms to create a merge group.")
+
+    # ── Existing Merge Rules ──────────────────────────────────
+    st.markdown("---")
+    st.markdown('<div class="section-header">📋 Existing Merge Rules</div>', unsafe_allow_html=True)
+
+    if merge_rules_df.empty:
+        st.info("No merge rules defined yet. Create one above!")
+    else:
+        for _, rule in merge_rules_df.iterrows():
+            gid = rule['MergeGroupID']
+            gname = rule['MergeGroupName']
+            lfs_str = rule['LoadForms']
+            lfs_list = [lf.strip() for lf in str(lfs_str).split(',') if lf.strip()]
+            created = rule.get('CreatedAt', '—')
+
+            with st.container():
+                rc1, rc2, rc3 = st.columns([1, 4, 1])
+                with rc1:
+                    st.markdown(f"**{gid}**")
+                with rc2:
+                    st.markdown(f"**{gname}** — {len(lfs_list)} Load Forms")
+                    # Show LFs as tags
+                    tags_html = " ".join(
+                        f'<span style="background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:12px;'
+                        f'font-size:11px;font-weight:500;margin-right:4px;display:inline-block;margin-bottom:3px">{lf}</span>'
+                        for lf in lfs_list
+                    )
+                    st.markdown(tags_html, unsafe_allow_html=True)
+                    st.caption(f"Created: {created}")
+                with rc3:
+                    if st.button("🗑️ Delete", key=f"del_{gid}"):
+                        with st.spinner("Deleting..."):
+                            delete_merge_rule(gid)
+                        st.session_state["merge_rules"] = load_merge_rules()
+                        st.success(f"Deleted {gid}")
+                        time.sleep(0.5)
+                        st.rerun()
+                st.markdown("---")
+
+    # Refresh button
+    if st.button("🔄 Refresh Merge Rules", key="btn_refresh_merge"):
+        st.session_state["merge_rules"] = load_merge_rules()
+        st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════
+# TAB 6 — ROUTE OPTIMIZER (OSRM)
+# ══════════════════════════════════════════════════════════════
+with tab6:
     # st.markdown('<div class="section-header">🗺️ OSRM Route Optimizer — Nearest Neighbor</div>', unsafe_allow_html=True)
 
     has_coords = "Lat" in df.columns and "Lon" in df.columns
@@ -1042,18 +1296,35 @@ with tab5:
     st.markdown('<div class="section-header">📋 Date-wise Route Summary (All Load Forms)</div>', unsafe_allow_html=True)
     st.caption("Calculate OSRM road distance & drive time for every Load Form in one click.")
 
-    wh_lat_batch = DEFAULT_WAREHOUSE["lat"]
-    wh_lon_batch = DEFAULT_WAREHOUSE["lon"]
-    warehouse_batch = {"name": "Warehouse", "lat": wh_lat_batch, "lon": wh_lon_batch}
+    # Load merge rules for route optimizer
+    if "merge_rules" not in st.session_state:
+        with st.spinner("Loading merge rules..."):
+            st.session_state["merge_rules"] = load_merge_rules()
+    _merge_rules_df = st.session_state["merge_rules"]
+    _lf_to_group, _group_details = get_merge_map(_merge_rules_df)
 
     if st.button("📡 Calculate All Routes (OSRM)", type="primary", key="btn_batch"):
-        all_lfs = df["LoadForm"].dropna().unique()
+        all_lfs = list(df["LoadForm"].dropna().unique())
         batch_rows = []
         progress = st.progress(0, text="Calculating routes...")
 
-        for idx, lf in enumerate(all_lfs):
-            progress.progress((idx + 1) / len(all_lfs), text=f"Processing {lf} ({idx+1}/{len(all_lfs)})...")
-            lf_sub = df[df["LoadForm"] == lf].copy()
+        # Build processing units: merge groups as combined, standalone LFs as-is
+        processed_lfs = set()
+        processing_units = []  # list of (label, [lf_ids], is_merged)
+
+        for gid, ginfo in _group_details.items():
+            group_lfs = [lf for lf in ginfo['load_forms'] if lf in all_lfs]
+            if len(group_lfs) >= 2:
+                processing_units.append((f"{gid} ({ginfo['name']})", group_lfs, True))
+                processed_lfs.update(group_lfs)
+
+        for lf in all_lfs:
+            if lf not in processed_lfs:
+                processing_units.append((str(lf), [lf], False))
+
+        for idx, (label, unit_lfs, is_merged) in enumerate(processing_units):
+            progress.progress((idx + 1) / len(processing_units), text=f"Processing {label} ({idx+1}/{len(processing_units)})...")
+            lf_sub = df[df["LoadForm"].isin(unit_lfs)].copy()
             lf_sub = lf_sub.dropna(subset=["Lat", "Lon"])
             lf_sub = lf_sub[(lf_sub["Lat"] != 0) & (lf_sub["Lon"] != 0)]
 
@@ -1066,6 +1337,8 @@ with tab5:
             dm = lf_sub["Deliveryman"].iloc[0] if len(lf_sub) > 0 else ""
             ob = lf_sub["OrderBooker"].iloc[0] if len(lf_sub) > 0 and "OrderBooker" in lf_sub.columns else ""
             dt = lf_sub["Date"].iloc[0] if len(lf_sub) > 0 else None
+            distributor_val = lf_sub["Distributor"].iloc[0] if len(lf_sub) > 0 and "Distributor" in lf_sub.columns else ""
+            warehouse_batch = get_warehouse_for_distributor(distributor_val)
             net = lf_sub["NetSales"].sum()
             drops = len(shops_list)
 
@@ -1074,8 +1347,11 @@ with tab5:
             else:
                 total_km, total_min, method = 0, 0, "No valid coordinates"
 
+            lf_display = f"🔗 {label}" if is_merged else label
+            dm_display = dm if not is_merged else f"{dm} (merged {len(unit_lfs)} LFs)"
+
             batch_rows.append({
-                "Date": dt, "Load Form #": lf, "Deliveryman": dm,
+                "Date": dt, "Load Form #": lf_display, "Deliveryman": dm_display,
                 "Order Booker": ob, "Drops": drops,
                 "Net Sales (Rs)": round(net, 0),
                 "OSRM Km": round(total_km, 1),
@@ -1138,7 +1414,7 @@ with tab5:
         lf_info["DMShort"] = lf_info["DM"].str.split(" DM ").str[0]
         lf_info["DateStr"] = lf_info["Date"].dt.strftime("%d %b %Y").fillna("")
         lf_label_map = {
-            row["LoadForm"]: f"{row['LoadForm']}  —  {row['DMShort']} · {row['DateStr']}"
+            row["LoadForm"]: ("🔗 " if row["LoadForm"] in _lf_to_group else "") + f"{row['LoadForm']}  —  {row['DMShort']} · {row['DateStr']}"
             for _, row in lf_info.iterrows()
         }
         lf_options = sorted(lf_label_map.keys())
@@ -1153,10 +1429,41 @@ with tab5:
         # wh_lat = st.number_input("Lat", value=DEFAULT_WAREHOUSE["lat"], format="%.7f", key="wh_lat",disabled=True)
         # wh_lon = st.number_input("Lon", value=DEFAULT_WAREHOUSE["lon"], format="%.7f", key="wh_lon",disabled=True)
 
-    warehouse = {"name": "Warehouse (Start/End)", "lat": DEFAULT_WAREHOUSE["lat"], "lon": DEFAULT_WAREHOUSE["lon"]}
+    # ── Auto-detect merge group ─────────────────────────────
+    merged_lf_ids = [sel_lf]  # Default: just the selected LF
+    is_merged_route = False
+    merge_group_label = ""
 
-    # Build shop list from selected LF
-    lf_df = df[df["LoadForm"] == sel_lf].copy()
+    if sel_lf in _lf_to_group:
+        merge_gid = _lf_to_group[sel_lf]
+        merge_info = _group_details[merge_gid]
+        # Only include LFs that exist in the current data
+        available_lfs = set(df["LoadForm"].dropna().unique())
+        merged_lf_ids = [lf for lf in merge_info['load_forms'] if lf in available_lfs]
+        is_merged_route = len(merged_lf_ids) >= 2
+        merge_group_label = merge_info['name']
+
+        if is_merged_route:
+            other_lfs = [lf for lf in merged_lf_ids if lf != sel_lf]
+            lf_tags = " ".join(
+                f'<span style="background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:12px;'
+                f'font-size:11px;font-weight:500;margin-right:4px">{lf}</span>'
+                for lf in merged_lf_ids
+            )
+            st.markdown(f"""
+            <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px 18px;margin:8px 0">
+              <div style="font-size:13px;font-weight:700;color:#1d4ed8">
+                🔗 Merge Group: {merge_group_label} ({merge_gid})
+              </div>
+              <div style="font-size:12px;color:#3b82f6;margin-top:4px">
+                This Load Form is merged with {len(other_lfs)} other LF(s). Route will include all shops from:
+              </div>
+              <div style="margin-top:6px">{lf_tags}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # Build shop list from all merged LFs
+    lf_df = df[df["LoadForm"].isin(merged_lf_ids)].copy()
     lf_df = lf_df.dropna(subset=["Lat", "Lon"])
     lf_df = lf_df[(lf_df["Lat"] != 0) & (lf_df["Lon"] != 0)]
 
@@ -1167,24 +1474,34 @@ with tab5:
     shop_agg = shop_agg.rename(columns={"StoreCode": "ShopCode", "StoreName": "ShopName"})
     shops_list = shop_agg.to_dict("records")
 
-    dm_name = lf_df["Deliveryman"].iloc[0] if len(lf_df) > 0 else ""
-    ob_name = lf_df["OrderBooker"].iloc[0] if len(lf_df) > 0 and "OrderBooker" in lf_df.columns else "—"
+    dm_names = lf_df["Deliveryman"].dropna().unique() if "Deliveryman" in lf_df.columns else []
+    dm_name = "<br>".join(dm_names) if len(dm_names) > 0 else "—"
+
+    ob_names = lf_df["OrderBooker"].dropna().unique() if "OrderBooker" in lf_df.columns else []
+    ob_name = "<br>".join(ob_names) if len(ob_names) > 0 else "—"
+
     lf_date = lf_df["Date"].iloc[0].strftime("%d %b %Y") if len(lf_df) > 0 and pd.notna(lf_df["Date"].iloc[0]) else "—"
     lf_status = lf_df["Status"].iloc[0] if len(lf_df) > 0 and "Status" in lf_df.columns else "—"
-    distributor = lf_df["Distributor"].iloc[0] if len(lf_df) > 0 and "Distributor" in lf_df.columns else "—"
+    
+    distributors = lf_df["Distributor"].dropna().unique() if "Distributor" in lf_df.columns else []
+    distributor = "<br>".join(distributors) if len(distributors) > 0 else "—"
+    
+    first_dist = lf_df["Distributor"].iloc[0] if len(lf_df) > 0 and "Distributor" in lf_df.columns else ""
+    warehouse = get_warehouse_for_distributor(first_dist)
     total_inv = lf_df["Invoice"].nunique() if "Invoice" in lf_df.columns else 0
     total_skus = lf_df["SKUCode"].nunique() if "SKUCode" in lf_df.columns else 0
     total_issued = lf_df["Issued"].sum() if "Issued" in lf_df.columns else 0
     total_return = lf_df["Return"].sum() if "Return" in lf_df.columns else 0
 
     # Load Form details card
+    merge_badge = f' <span style="background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">🔗 MERGED ({len(merged_lf_ids)} LFs)</span>' if is_merged_route else ""
     st.markdown(f"""
     <div style="background:#ffffff;color:#1a1a2e;border:1px solid #e8ecf0;
                 border-radius:12px;padding:18px 24px;margin:12px 0 16px 0;
                 box-shadow:0 1px 4px rgba(0,0,0,0.06)">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
         <div>
-          <div style="font-size:18px;font-weight:700;color:#1a1a2e">📦 {sel_lf}</div>
+          <div style="font-size:18px;font-weight:700;color:#1a1a2e">📦 {sel_lf}{merge_badge}</div>
           <div style="font-size:12px;color:#6b7280;margin-top:2px">{lf_date} · <span style="background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600">{lf_status}</span></div>
         </div>
         <div style="text-align:right">
@@ -1217,11 +1534,12 @@ with tab5:
             route_rows, total_km, total_min, route_idx, method = run_osrm_optimize(shops_list, warehouse)
             ordered_shops = [shops_list[i - 1] for i in route_idx[1:-1]]
 
+        lf_label_for_result = f"{sel_lf} (🔗 {merge_group_label})" if is_merged_route else sel_lf
         st.session_state["route_result"] = {
             "rows": route_rows, "total_km": total_km, "total_min": total_min,
             "route_idx": route_idx, "method": method,
             "ordered_shops": ordered_shops, "warehouse": warehouse,
-            "load_form": sel_lf, "dm_name": dm_name,
+            "load_form": lf_label_for_result, "dm_name": dm_name,
         }
 
     # ── Display Results ───────────────────────────────────────
